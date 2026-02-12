@@ -1,7 +1,7 @@
 import {defineStore} from 'pinia'
 import {ref} from 'vue'
 
-
+const isConnected = ref(false);
 export const useMqttStore =  defineStore('mqtt', ()=>{
 
     /*  
@@ -18,13 +18,40 @@ export const useMqttStore =  defineStore('mqtt', ()=>{
     const mqtt              = ref(null);
     const host              = ref("dbs.msjrealtms.com");  // Host Name or IP address
     const port              = ref(9002);  // Port number
-    const payload           = ref({"id":620012345,"timestamp": 1702566538,"number":0,"ledA":0,"ledB":0}); // Set initial values for payload
+    const payload           = ref({"id":620171712,"timestamp": 1702566538,"number":0,"ledA":0,"ledB":0}); // Set initial values for payload
     const payloadTopic      = ref("");
     const subTopics         = ref({});
  
 
 
     // ACTIONS
+    const sensor = ref({
+        id: null,
+        timestamp: null,
+        temperature: null,
+        humidity: null,
+        heatindex: null,
+    
+    });
+    
+    const history = ref([]);
+    const maxHistory = ref(120);
+
+    // =======================
+    //INTERNAL UNITS
+    //========================
+
+    const makeid = (length) => {
+        let result = "";
+        const characters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        const charactersLength = characters.length;
+        for(let i = 0; i < length; i++){
+            result += characters.charAt(
+                Math.floor(Math.random() * charactersLength)
+            );
+        }
+        return "IOT_F_" + result;
+    }
     
     const onSuccess = ()=> {
         // called when the connect acknowledgement has been received from the server.
@@ -33,6 +60,7 @@ export const useMqttStore =  defineStore('mqtt', ()=>{
 
     const onConnected = (reconnect,URI)=> {
         // called when a connection is successfully made to the server. after a connect() method.
+        isConnected.value = true;
         console.log(`Connected to: ${URI} , Reconnect: ${reconnect}`);      
         if(reconnect){
             const topics = Object.keys(subTopics.value);
@@ -50,10 +78,13 @@ export const useMqttStore =  defineStore('mqtt', ()=>{
         // lost because the client initiates a disconnect or because the server or network cause 
         // the client to be disconnected. The disconnect call back may be called without the 
         // connectionComplete call back being invoked if, for example the client fails to connect. 
+        isConnected.value = false;
         if (response.errorCode !== 0) {
             console.log(`MQTT: Connection lost - ${response.errorMessage}`);
         }
-        }
+        return { payload, payloadTopic, subscribe, unsubcribe, unsubcribeAll, publish, connect, disconnect, isConnected }
+
+    }
   
     const onFailure = (response) => {
         // called when the connect request has failed or timed out.
@@ -62,15 +93,40 @@ export const useMqttStore =  defineStore('mqtt', ()=>{
         };
     
     const onMessageArrived = (response) => {
-           // called when a message has arrived in this Paho.MQTT.client.
-           try {
-            payload.value       = JSON.parse(response.payloadString); 
-            payloadTopic.value  = response.destinationName;
-            console.log(`Topic : ${payloadTopic.value} \nPayload : ${response.payloadString}`);  
-           } catch (error) {
-            console.log(`onMessageArrived Error: ${error}`);
-           }
+      try {
+        const topic = response.destinationName;
+        const raw = response.payloadString;
+
+        payloadTopic.value = topic;
+        payload.value = JSON.parse(raw);
+
+        // ✅ If sensor topic, update live sensor + history
+        if (topic === "620171712") {
+          const data = payload.value;
+
+          // Normalize expected fields
+          sensor.value = {
+            id: data.id ?? null,
+            timestamp: data.timestamp ?? null,
+            temperature: data.temperature ?? null,
+            humidity: data.humidity ?? null,
+            heatindex: data.heatindex ?? null,
+          };
+
+          history.value.push(sensor.value);
+
+          // Keep buffer bounded
+          if (history.value.length > maxHistory.value) {
+            history.value.splice(0, history.value.length - maxHistory.value);
+          }
         }
+
+        console.log(`Topic: ${topic}\nPayload: ${raw}`);
+      } catch (error) {
+        console.log(`MQTT: onMessageArrived parse error: ${error}`);
+      }
+    };
+
  
     const makeid = (length) =>{
         var result           = '';
@@ -98,17 +154,21 @@ export const useMqttStore =  defineStore('mqtt', ()=>{
         }
 
     const subscribe = (topic) => {
-        // Subscribe for messages, request receipt of a copy of messages sent to the destinations described by the filter.
-        // console.log(`MQTT: Subscribing to - ${topic}`);
-        try {
-            var subscribeOptions = { onSuccess: sub_onSuccess, onFailure: sub_onFailure, invocationContext:{"topic":topic} }
-        mqtt.value.subscribe(topic,subscribeOptions);   
-        } catch (error) {
-            console.log(`MQTT: Unable to Subscribe ${error} `);
-        }
-              
-        }
-
+      if (!mqtt.value) {
+        console.log("MQTT: subscribe skipped (client not created yet)");
+        return;
+      }
+      try {
+        const opts = {
+          onSuccess: sub_onSuccess,
+          onFailure: sub_onFailure,
+          invocationContext: { topic },
+        };
+        mqtt.value.subscribe(topic, opts);
+      } catch (error) {
+        console.log(`MQTT: Unable to Subscribe: ${error}`);
+      }
+    };
     
     // UNSUBSCRIBE UTIL FUNCTIONS
     const unSub_onSuccess = (response) => {    
@@ -146,16 +206,21 @@ export const useMqttStore =  defineStore('mqtt', ()=>{
 
     // PUBLISH UTIL FUNCTION
     const publish = (topic, payload) => { 
+        if(!mqtt.value){
+            console.log("MQTT: publish skipped (not connected yet)");
+            return;
+        }
         const message           = new Paho.MQTT.Message(payload);
         message.destinationName = topic;
         mqtt.value.publish(message);                     
-         }
+    }
 
     // DISCONNECT UTIL FUNCTION
-    const disconnect = () => {  
-        mqtt.value.disconnect();                     
-        }
- 
+    const disconnect = () => {
+      if (!mqtt.value) return;
+      mqtt.value.disconnect();
+      isConnected.value = false;
+    };
 
     const connect = ()=> {
         var IDstring = makeid(12);
@@ -169,6 +234,12 @@ export const useMqttStore =  defineStore('mqtt', ()=>{
         mqtt.value.onMessageArrived   = onMessageArrived;
         mqtt.value.onConnected        = onConnected;
         mqtt.value.connect(options);    
+    };
+    const startLive = () => {
+      connect();
+      // subscribing immediately is okay; if it fails on first try,
+      // it will succeed after reconnect due to the subTopics re-sub logic.
+      subscribe("620171712");
     };
 
  
