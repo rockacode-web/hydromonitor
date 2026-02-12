@@ -74,6 +74,8 @@ void MQTT_Connect( void * pvParameters ){
         } 
         else {
           Serial.printf("\nConnection failed with status code : %d ,  re-trying in 10 seconds\n", mqtt.state());   
+          Serial.printf("\nConnection failed with status code : %d ,  re-trying...\n", mqtt.state());
+
         }
 
         vTaskDelay(10000 / portTICK_PERIOD_MS);
@@ -150,8 +152,8 @@ void initMQTT(void){
     mqtt.setCallback(callback); // This function will be invoked when client received subscribed topic 
     
     mqtt.setBufferSize(2000);
-    mqtt.setKeepAlive(15);
-    mqtt.setSocketTimeout(15);    
+    mqtt.setKeepAlive(60);
+    mqtt.setSocketTimeout(60);    
 
     MQTT_ConnectFunction();  
     vLOOPFunction();  
